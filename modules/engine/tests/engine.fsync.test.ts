@@ -108,12 +108,16 @@ describe('durable engine (storage rule 1)', () => {
       const tree = countTree(dataDir);
       const syncedSet = new Set(synced);
       const missed: string[] = [];
+      // Windows cannot flush a directory handle, so syncTree skips directories there (see EngineFsync.syncTree).
+      const windows = process.platform === 'win32';
       for (const entry of fs.readdirSync(dataDir, { recursive: true, encoding: 'utf8' })) {
-        if (!syncedSet.has(path.join(dataDir, entry))) missed.push(entry);
+        const full = path.join(dataDir, entry);
+        if (windows && fs.statSync(full).isDirectory()) continue;
+        if (!syncedSet.has(full)) missed.push(entry);
       }
       expect(missed).toEqual([]);
-      expect(syncedSet.has(dataDir)).toBe(true);
-      expect(syncedSet.has(path.dirname(dataDir))).toBe(true);
+      expect(syncedSet.has(dataDir)).toBe(!windows);
+      expect(syncedSet.has(path.dirname(dataDir))).toBe(!windows);
       console.info(`[spike6] new data directory: ${tree.files} files, ${tree.dirs} directories, ${synced.length} fsyncs during open`);
       expect((await pg.query<{ f: string; m: string }>("SELECT current_setting('fsync') f, current_setting('wal_sync_method') m")).rows[0]).toEqual({
         f: 'on',
@@ -142,7 +146,10 @@ describe('durable engine (storage rule 1)', () => {
     const paths = checkpoint.map((e) => e.path);
     expect(paths).toContain('global/pg_control');
     expect(paths.filter((p) => p.startsWith('base/')).length).toBeGreaterThan(0);
-    expect(checkpoint.every((e) => e.errno === undefined)).toBe(true);
+    // Files always flush; a directory reports EINVAL on Windows (28 in Emscripten), which PostgreSQL ignores.
+    expect(checkpoint.filter((e) => !e.dir && e.errno !== undefined)).toEqual([]);
+    const dirErrno = process.platform === 'win32' ? 28 : undefined;
+    expect(checkpoint.filter((e) => e.dir && e.errno !== dirErrno)).toEqual([]);
     console.info(
       `[spike6] 100 autocommit inserts: ${commits.length} fsyncs (${(commits.length / 100).toFixed(2)} per commit, all pg_wal); ` +
         `CHECKPOINT: ${checkpoint.length} fsyncs (${paths.filter((p) => p.startsWith('base/')).length} data files, ` +

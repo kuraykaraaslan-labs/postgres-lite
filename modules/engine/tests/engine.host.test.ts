@@ -91,7 +91,9 @@ describe('WorkerEngine', () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
       clearInterval(timer);
-      expect(ticks).toBeGreaterThan(50);
+      // Windows timers fire every ~15.6 ms at best (about 64 per second), so ask for well under that; a blocked
+      // main thread would give close to zero.
+      expect(ticks).toBeGreaterThan(20);
       expect(otherReplies.length).toBeGreaterThan(10);
       expect(new Set(otherReplies)).toEqual(new Set(['42']));
 
