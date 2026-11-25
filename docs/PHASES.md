@@ -144,15 +144,15 @@ Other widely used Timescale features added for general users: `time_bucket` with
 
 | | |
 |---|---|
-| Repo | `kuraykaraaslan-labs/postgres-lite` cloned to `/home/kuray/postgres-lite`, empty |
-| Done | this plan; storage measurements on PGlite 0.5.16 (process crash safe, no lock, `fsync = off`); adversarial durability review folded into [Storage and durability](#storage-and-durability) |
-| Next | Phase 0 spikes |
+| Done | Plan; storage review; scaffold; **Phase 0 spikes 1–7 pass** (101 tests, see [docs/spikes/](spikes/README.md)) |
+| Not safe yet | The spike wire server must not serve more than one client at a time: a second client's disconnect rolls back the first client's open transaction (Phase B fixes this) |
+| Next | Spike 8 (CI on macOS and Windows), then Phase A |
 
 ---
 
 ## Phase 0: spikes (go / no-go)
 
-Each spike gets a short result in `docs/SPIKES.md`. A failed spike changes the plan before code is written.
+Each spike has a report in [docs/spikes/](spikes/README.md). A failed spike changes the plan before code is written.
 
 1. **Protocol passthrough.** A minimal TCP server that does startup itself and forwards query messages to PGlite's raw-protocol entry point (`execProtocolRaw`). Pass: node-postgres runs `SELECT 1` and a parameterised query (extended protocol).
 2. **Role switching.** `SET SESSION AUTHORIZATION <non-superuser>` on the single PGlite backend makes RLS with `FORCE` apply, and switching back works. Pass: a two-role RLS probe returns the right rows.
@@ -162,6 +162,36 @@ Each spike gets a short result in `docs/SPIKES.md`. A failed spike changes the p
 6. **fsync.** Implement storage rule 1 and prove it with a lost-unsynced-writes test: record which writes were fsynced, rebuild the directory as the fsynced state plus an arbitrary subset of the other writes, reopen, and require every acknowledged commit present and `amcheck` clean. Also require fsyncs of `pg_control` and data files at `CHECKPOINT`, and of every file after initdb. Measure the cost per commit. A WAL-only flush does not pass (reviewed: it lost every commit after a restart, or left 25 of 1 011 rows after a checkpoint).
 7. **Engine in a worker thread.** PGlite runs in a `worker_thread` with the raw protocol passed by message; measure the overhead; `Worker.terminate()` recovers a hung engine and the directory reopens with crash recovery (storage rules 3 and 4).
 8. **Every OS.** The storage suite (see Acceptance) passes on Linux, macOS and Windows, including a Windows user name with non-ASCII letters, a path near the 260-character limit, and on macOS and Windows two databases whose names differ only in case or Unicode normalisation.
+
+### Phase 0 results (2026-11-25, Linux/WSL2, Node 26)
+
+Spikes 1–7 pass; each was checked by an independent reviewer. Spike 8 needs the CI matrix.
+
+| Spike | Result |
+|---|---|
+| 1 Wire | node-postgres works unchanged through a server that does startup itself: 22 tests. `SELECT 1` 0.11 ms simple, 0.14 ms extended |
+| 2 Roles | One engine serves several login roles with correct RLS, `FORCE`, `SECURITY DEFINER`, `security_barrier` views and `GRANT … WITH INHERIT/SET`: 28 tests. Session swap costs about 2.4 ms per lease change |
+| 3 Extension | SQL-only `timescaledb` 2.31.0 installs with `CREATE EXTENSION … SCHEMA public` in memory and on disk; next-boilerplate's own probe reports `available: true, edition: 'tsl'`: 17 tests |
+| 4 next-boilerplate | All 421 SQL migrations apply with 0 failures; TypeORM `synchronize` over 664 entities works; the catalog matches real PostgreSQL 18.6 |
+| 5 Parser | `libpg-query` 18.2.2 (PostgreSQL 18 grammar, MIT, CommonJS, 17–24 ms to load) |
+| 6 fsync | Exactly 1 fsync per commit; `CHECKPOINT` flushes data files, `pg_control` and directories; every crash image keeps every acknowledged commit with `amcheck` clean. Cost: 5.5–9 ms per commit on WSL2 ext4 (about 100–170 commits per second on one connection) |
+| 7 Worker | 0.3–0.4 ms per round trip; `terminate()` ends a hung engine in 20–50 ms, and the directory reopens with nothing acknowledged lost |
+
+**Decisions from Phase 0** (they override earlier text in this file):
+
+- **Engine I/O.** Use `execProtocolRawStream` with `onRawData`, never `execProtocolRaw` (it leaks: 24 MB per 50 000 calls). Send one PGlite startup packet per engine open. `syncToFs: false`; durability comes from storage rule 1.
+- **Start parameters.** PGlite replaces its defaults instead of merging them: always spread `PGlite.defaultStartParams`. Durable engines: without `-F`, plus `-c fsync=on -c wal_sync_method=fsync`; settings that would undo that are refused. `--timescale-license` is a `-c timescaledb.license=<v>` start parameter.
+- **Frontend message allowlist** `Q P B D E S H C F d c f`; anything else is answered `FATAL 08P01` by the server, because an unknown type or `p` hangs PGlite for good. `X` is never forwarded.
+- **The server writes ParameterStatus itself**: PGlite sends none, so the 15 values PostgreSQL 18 reports are generated by the wire layer.
+- **COPY FROM STDIN** is buffered by the server and sent to the engine in one call (a lone `COPY` kills the engine), with a memory cap. Until then it is refused with `0A000`.
+- **Session swap** uses a SQL capture (session user, role, session settings, a per-engine registry of custom setting names), not ParameterStatus. `ALTER ROLE/DATABASE … SET` defaults are applied at connection start, because PGlite does not. `RESET SESSION AUTHORIZATION`, `SET SESSION AUTHORIZATION DEFAULT` and `DISCARD ALL` are rewritten to "back to the login role". SQL-level `PREPARE` names are namespaced per connection.
+- **Roles are faithful, not a security boundary.** Dynamic SQL can make a non-superuser login superuser on the shared backend. Documented in the README.
+- **`statement_timeout` is not enforced by PGlite** (`pg_sleep(2)` under 200 ms ran 2 s). The server enforces it by terminating the worker engine (storage rules 3 and 4) and returns `57014`.
+- **Extensions per engine:** `uuid-ossp` and `btree_gist` (next-boilerplate creates both; both ship with PGlite). The `timescaledb` bundle is registered on every open of a database that has it installed, even without `--timescale`; it lives outside the data directory.
+- **Rewrite layer:** `libpg-query` 18.2.2, rewrite by byte span of the original text and never deparse (the PG18 deparser breaks `DROP DATABASE … WITH (FORCE)`, `ALTER DATABASE … RENAME` and value-less `timescaledb.*` options). Keyword pre-filter first; on a parse error forward the original text. Each rewrite carries the command tag the client expects. `CREATE DATABASE IF NOT EXISTS` is not PostgreSQL syntax and is dropped from the target list.
+- **Commit cost** of 5.5–9 ms is the price of no data loss and stays the default. A relaxed mode, if ever added, is opt-in and named so nobody turns it on by accident.
+- **Tests need Node 22.15+** (Vitest 5 and the TypeScript-source worker); the published package targets Node 20+, to be checked in CI.
+- **Phase D acceptance:** next-boilerplate's catalog fingerprint diffed against real PostgreSQL 18.6, over the wire. Note that its second `synchronize` drops 19 indexes and 19 `CHECK` constraints the migrations created; that is next-boilerplate's behaviour on real PostgreSQL too.
 
 ## Phase A: wire protocol
 

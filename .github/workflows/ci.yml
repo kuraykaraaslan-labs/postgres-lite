@@ -12,7 +12,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: [20, 24]
+        # The test runner needs Node 22.15+ (Vitest 5, the TypeScript-source engine worker); see docs/PHASES.md, Phase 0 results.
+        node: [22, 24]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

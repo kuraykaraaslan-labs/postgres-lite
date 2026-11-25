@@ -204,6 +204,8 @@ Known by design:
 | Performance | No guarantees of any kind (see the note at the top). |
 | Concurrency | One transaction runs at a time per database; others wait. Code that waits inside a transaction for another connection gets `55P03` after `--lock-timeout` instead of waiting forever. |
 | Temporary tables | Visible to every connection of the same database. |
+| Roles | RLS, `FORCE`, grants and `SECURITY DEFINER` behave as in PostgreSQL for application code, but all connections share one backend, so roles are not a security boundary: dynamic SQL can switch to the superuser. Don't expose postgres-lite to untrusted clients. |
+| `statement_timeout` | Enforced by the server, which stops the engine and recovers it; the cancelled statement gets `57014` as in PostgreSQL. |
 | Chunks | Hypertables stay ordinary tables; chunks are views over time ranges. Query results match TimescaleDB, storage layout does not. |
 | Compression | Settings and status only; data is not compressed. |
 | Dynamic SQL | `timescaledb.*` options inside PL/pgSQL `EXECUTE` strings are not recognised. |
