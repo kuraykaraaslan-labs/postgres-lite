@@ -85,7 +85,7 @@ Windows rule, tested on Linux with `platform: 'win32'`: every directory fsync Po
 
 ## Open questions
 
-- Real macOS (`F_FULLFSYNC` cost) and real Windows (`FlushFileBuffers`, `EINVAL` path, sharing violations) are not tested; spike 8.
+- Real macOS and real Windows: tested in spike 8. On Windows the end-of-workload images failed until a rename was followed by a flush of the renamed file; see PHASES.md, Phase 0 results.
 - `syncTree` on Windows skips directories; whether NTFS needs anything for new entries (it journals metadata) is not tested.
 - The crash points are between statements. A crash in the middle of `CHECKPOINT` or of a commit's WAL write is not tested (the recorder could cut at any op index; not done here). The `after-checkpoint` point leaves only 1 unsynced op for the random set (table above), so its 4 images check little beyond reopening the fsynced state; the `before-checkpoint` and `end` points carry the test.
 - `EngineOpen.open` decides "new directory, run `syncTree`" from the absence of `PG_VERSION` before the open. If a first open is killed after initdb wrote `PG_VERSION` but before `syncTree` finished, the next open treats the directory as existing and never fsyncs initdb's output. Not tested; a marker written after `syncTree` (and a full sync when it is missing) would cover this and the plain-PGlite question below.

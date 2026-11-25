@@ -179,7 +179,15 @@ export class CrashRecorder {
       const fromParent = this.idOf(node.parent);
       const fromName = node.name;
       const fromRel = this.rel(node);
-      rename(node, newDir, newName);
+      // Recorded when issued: a flush done inside the rename (EngineFsync on Windows) must come after it.
+      const op: RecordedOp = { kind: 'rename', id, fromParent, fromName, toParent: this.idOf(newDir), toName: newName };
+      const at = this.ops.push(op) - 1;
+      try {
+        rename(node, newDir, newName);
+      } catch (error) {
+        this.ops.splice(at, 1);
+        throw error;
+      }
       const toRel = this.rel(newDir) === '' ? newName : `${this.rel(newDir)}/${newName}`;
       for (const [p, pid] of [...this.#liveByPath]) {
         if (p === fromRel || p.startsWith(`${fromRel}/`)) {
@@ -187,7 +195,6 @@ export class CrashRecorder {
           this.#liveByPath.set(toRel + p.slice(fromRel.length), pid);
         }
       }
-      this.ops.push({ kind: 'rename', id, fromParent, fromName, toParent: this.idOf(newDir), toName: newName });
     };
 
     for (const key of ['unlink', 'rmdir'] as const) {

@@ -10,6 +10,9 @@ import type { BaseTree, RecordedOp } from './crash-recorder.js';
  * - A write or truncate is durable if the same file is fsynced later.
  * - A create is durable if its directory or the new file is fsynced later.
  * - A rename or unlink is durable if the directories involved are fsynced later.
+ * - On Windows no directory can be fsynced, and NTFS commits a file's metadata (its name included) when the file is
+ *   flushed, so a rename there is also durable if the renamed file is fsynced later. This is the one assumption the
+ *   Windows model adds; it cannot be checked without cutting power to a real disk.
  * Unsynced writes are split into 4 KiB sectors that survive independently, so torn pages are part of the test.
  */
 
@@ -42,7 +45,7 @@ function lastFsyncIndex(ops: readonly RecordedOp[]): Map<number, number> {
   return last;
 }
 
-function isDurable(op: RecordedOp, index: number, last: Map<number, number>): boolean {
+function isDurable(op: RecordedOp, index: number, last: Map<number, number>, platform: NodeJS.Platform): boolean {
   const after = (id: number): boolean => (last.get(id) ?? -1) > index;
   switch (op.kind) {
     case 'fsync':
@@ -53,7 +56,7 @@ function isDurable(op: RecordedOp, index: number, last: Map<number, number>): bo
     case 'create':
       return after(op.parent) || after(op.id);
     case 'rename':
-      return after(op.toParent) && after(op.fromParent);
+      return (after(op.toParent) && after(op.fromParent)) || (platform === 'win32' && after(op.id));
     case 'unlink':
       return after(op.parent);
   }
@@ -158,7 +161,14 @@ class ImageModel {
 }
 
 /** Builds the image for a crash right before ops[crashAt]. */
-export function buildCrashImage(base: BaseTree, allOps: readonly RecordedOp[], crashAt: number, seed: number, outDir: string): CrashImageStats {
+export function buildCrashImage(
+  base: BaseTree,
+  allOps: readonly RecordedOp[],
+  crashAt: number,
+  seed: number,
+  outDir: string,
+  platform: NodeJS.Platform = process.platform,
+): CrashImageStats {
   const ops = allOps.slice(0, crashAt);
   const last = lastFsyncIndex(ops);
   const random = seededRandom(seed);
@@ -166,7 +176,7 @@ export function buildCrashImage(base: BaseTree, allOps: readonly RecordedOp[], c
   const stats: CrashImageStats = { ops: ops.length, durableOps: 0, volatileOps: 0, volatileKept: 0 };
   ops.forEach((op, i) => {
     if (op.kind === 'fsync') return;
-    if (isDurable(op, i, last)) {
+    if (isDurable(op, i, last, platform)) {
       stats.durableOps++;
       model.apply(op);
       return;

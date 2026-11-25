@@ -174,6 +174,38 @@ describe('durable engine (storage rule 1)', () => {
     await pg.close();
   });
 
+  it('on Windows flushes a renamed file right after the rename, since its directory cannot be flushed', async () => {
+    const dataDir = path.join(root, 'win32-rename');
+    const events: string[] = [];
+    const log: FsyncEvent[] = [];
+    const renames: NodefsHook = (mod) => {
+      const rename = mod.NODEFS.node_ops.rename;
+      mod.NODEFS.node_ops.rename = (node, newDir, newName): void => {
+        if (!mod.FS.isDir(node.mode)) events.push(`rename ${newName}`);
+        rename(node, newDir, newName);
+      };
+    };
+    const fsyncs: NodefsHook = (mod) => {
+      const fsync = mod.NODEFS.stream_ops.fsync;
+      if (fsync === undefined) return;
+      mod.NODEFS.stream_ops.fsync = (stream: EmscriptenStream): number => {
+        if (!mod.FS.isDir(stream.node.mode)) events.push(`fsync ${stream.node.name}`);
+        return fsync(stream);
+      };
+    };
+    const { pg } = await EngineOpen.open(
+      { kind: 'disk', dataDir },
+      { platform: 'win32', hooks: [fsyncLog(dataDir, log), renames, fsyncs] },
+    );
+    await pg.exec("CREATE TABLE t (v text); INSERT INTO t VALUES ('a')");
+    await pg.exec('SELECT pg_switch_wal()');
+    await pg.exec('CHECKPOINT');
+    await pg.close();
+    const renamed = events.flatMap((e, i) => (e.startsWith('rename ') ? [i] : []));
+    expect(renamed.length).toBeGreaterThan(0);
+    for (const i of renamed) expect(events[i + 1]).toBe(`fsync ${events[i]?.slice('rename '.length)}`);
+  });
+
   it('measures the commit latency cost (500 autocommit inserts, with and without the fix)', async () => {
     const measure = async (durable: boolean): Promise<{ median: number; p95: number }> => {
       const { pg } = await EngineOpen.open({ kind: 'disk', dataDir: path.join(root, `latency-${durable}`) }, { durable });

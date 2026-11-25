@@ -97,6 +97,10 @@ export default class EngineFsync {
    * Adds stream_ops.fsync to NODEFS. Node maps fs.fsyncSync to F_FULLFSYNC on macOS and FlushFileBuffers on Windows.
    * Windows cannot flush a directory handle (EPERM, which PostgreSQL turns into a PANIC), so a directory fsync there
    * reports EINVAL: PostgreSQL's fsync_fname ignores EINVAL and EBADF for directories, as on any OS that cannot do it.
+   *
+   * That leaves a rename on Windows (a new WAL segment, a checkpoint file) with nothing to make the new name durable,
+   * so there the renamed file is flushed right after the rename: NTFS commits a file's metadata, its name included,
+   * with FlushFileBuffers. Native PostgreSQL on Windows does not do this; renames are rare, so it costs little.
    */
   static install(mod: NodefsModule, platform: NodeJS.Platform = process.platform): void {
     const { NODEFS, FS } = mod;
@@ -108,7 +112,27 @@ export default class EngineFsync {
         fs.fsyncSync(stream.nfd);
         return 0;
       });
+    if (platform === 'win32') EngineFsync.flushRenames(mod);
     Logger.debug(`[EngineFsync.install] ${EngineMessages.FSYNC_INSTALLED}`, { platform });
+  }
+
+  private static flushRenames({ NODEFS, FS }: NodefsModule): void {
+    const rename = NODEFS.node_ops.rename;
+    NODEFS.node_ops.rename = (node, newDir, newName): void => {
+      rename(node, newDir, newName);
+      if (FS.isDir(node.mode)) return;
+      // NODEFS sets node.name but moves node.parent only after this returns, so build the new path from newDir.
+      const target = path.join(NODEFS.realPath(newDir), newName);
+      NODEFS.tryFSOperation(() => {
+        const nfd = fs.openSync(target, 'r+');
+        try {
+          // Through stream_ops, so hooks installed after this one (the crash recorder) see the flush.
+          NODEFS.stream_ops.fsync?.({ node, nfd });
+        } finally {
+          fs.closeSync(nfd);
+        }
+      });
+    };
   }
 
   /**

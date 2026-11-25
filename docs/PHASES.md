@@ -144,9 +144,9 @@ Other widely used Timescale features added for general users: `time_bucket` with
 
 | | |
 |---|---|
-| Done | Plan; storage review; scaffold; **Phase 0 spikes 1–7 pass** (101 tests, see [docs/spikes/](spikes/README.md)) |
+| Done | Plan; storage review; scaffold; **Phase 0 spikes 1–7 pass**, and the engine suite passes on Linux, macOS and Windows (spike 8, engine part; see [docs/spikes/](spikes/README.md)) |
 | Not safe yet | The spike wire server must not serve more than one client at a time: a second client's disconnect rolls back the first client's open transaction (Phase B fixes this) |
-| Next | Spike 8 (CI on macOS and Windows), then Phase A |
+| Next | Phase A. The rest of spike 8 (non-ASCII user names, long paths, names differing only in case) needs instances and databases, so it moves into the Phase A and C acceptance |
 
 ---
 
@@ -165,7 +165,7 @@ Each spike has a report in [docs/spikes/](spikes/README.md). A failed spike chan
 
 ### Phase 0 results (2026-11-25, Linux/WSL2, Node 26)
 
-Spikes 1–7 pass; each was checked by an independent reviewer. Spike 8 needs the CI matrix.
+Spikes 1–7 pass; each was checked by an independent reviewer. Spike 8, engine part: the whole suite passes in CI on Linux, macOS and Windows (Node 22 and 24) and on a local Windows 11 machine; its path and name cases need instances and databases and are part of the Phase A and C acceptance.
 
 | Spike | Result |
 |---|---|
@@ -176,6 +176,7 @@ Spikes 1–7 pass; each was checked by an independent reviewer. Spike 8 needs th
 | 5 Parser | `libpg-query` 18.2.2 (PostgreSQL 18 grammar, MIT, CommonJS, 17–24 ms to load) |
 | 6 fsync | Exactly 1 fsync per commit; `CHECKPOINT` flushes data files, `pg_control` and directories; every crash image keeps every acknowledged commit with `amcheck` clean. Cost: 5.5–9 ms per commit on WSL2 ext4 (about 100–170 commits per second on one connection) |
 | 7 Worker | 0.3–0.4 ms per round trip; `terminate()` ends a hung engine in 20–50 ms, and the directory reopens with nothing acknowledged lost |
+| 8 Every OS (engine) | Windows cannot flush a directory, so a rename (a new WAL segment) had nothing making the new name durable: crash images at the end of the workload failed to open. Fixed by flushing the renamed file right after the rename on Windows; the crash suite now also runs the Windows rules on Linux and macOS |
 
 **Decisions from Phase 0** (they override earlier text in this file):
 
@@ -190,6 +191,8 @@ Spikes 1–7 pass; each was checked by an independent reviewer. Spike 8 needs th
 - **Extensions per engine:** `uuid-ossp` and `btree_gist` (next-boilerplate creates both; both ship with PGlite). The `timescaledb` bundle is registered on every open of a database that has it installed, even without `--timescale`; it lives outside the data directory.
 - **Rewrite layer:** `libpg-query` 18.2.2, rewrite by byte span of the original text and never deparse (the PG18 deparser breaks `DROP DATABASE … WITH (FORCE)`, `ALTER DATABASE … RENAME` and value-less `timescaledb.*` options). Keyword pre-filter first; on a parse error forward the original text. Each rewrite carries the command tag the client expects. `CREATE DATABASE IF NOT EXISTS` is not PostgreSQL syntax and is dropped from the target list.
 - **Commit cost** of 5.5–9 ms is the price of no data loss and stays the default. A relaxed mode, if ever added, is opt-in and named so nobody turns it on by accident.
+- **Windows renames** are followed by a flush of the renamed file (NTFS commits a file's name with its metadata on `FlushFileBuffers`). Native PostgreSQL on Windows does not do this. This one assumption about NTFS cannot be tested without cutting power to a real disk.
+- **Compile the WASM once.** Every engine compiles PGlite's WASM; 15 test forks doing it at once ran V8 out of memory on Windows (`Fatal process out of memory: Zone`). The server compiles the module once and hands it to each engine worker (PGlite's `wasmModule` option) in Phase A. Tests run at most 2 files at a time on Windows.
 - **Tests need Node 22.15+** (Vitest 5 and the TypeScript-source worker); the published package targets Node 20+, to be checked in CI.
 - **Phase D acceptance:** next-boilerplate's catalog fingerprint diffed against real PostgreSQL 18.6, over the wire. Note that its second `synchronize` drops 19 indexes and 19 `CHECK` constraints the migrations created; that is next-boilerplate's behaviour on real PostgreSQL too.
 

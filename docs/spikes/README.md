@@ -11,6 +11,6 @@ Each spike answers one go / no-go question from [docs/PHASES.md](../PHASES.md#ph
 | 5 | [SQL parser](05-sql-parser.md) | Pass: `libpg-query` 18.2.2 | report only |
 | 6 | [fsync](06-fsync.md) | Pass | `modules/engine/` |
 | 7 | [Worker engine](07-worker-engine.md) | Pass | `modules/engine/` |
-| 8 | Every OS | Pending: CI on macOS and Windows | `.github/workflows/ci.yml` |
+| 8 | Every OS | Engine part passes on Linux, macOS and Windows; path and name cases move to Phase A and C | `.github/workflows/ci.yml` |
 
 Spike code is a starting point for Phase A and B, not finished product: the wire server is single-client until Phase B.

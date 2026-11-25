@@ -20,59 +20,68 @@ import { checkImage, MARKS, runWorkload, type Acked, type MarkLabel } from './su
  */
 
 const SEEDS = [1, 2, 3, 4];
+// Windows rules (no directory fsync, renamed files flushed) also run on Linux and macOS, so every CI job checks them.
+const PLATFORMS: readonly NodeJS.Platform[] = process.platform === 'win32' ? ['win32'] : [process.platform, 'win32'];
 // 16 buffers: dirty pages get evicted between checkpoints, so unsynced data-file writes are part of every image.
 const SETTINGS = { shared_buffers: '128kB' };
 
 interface Recording {
   recorder: CrashRecorder;
   ackedAt: Map<MarkLabel, Acked>;
+  platform: NodeJS.Platform;
 }
 
 let root: string;
 
-async function record(name: string, durable: boolean): Promise<Recording> {
+async function record(name: string, durable: boolean, platform: NodeJS.Platform = process.platform): Promise<Recording> {
   const dataDir = path.join(root, `${name}-live`);
   const recorder = new CrashRecorder(dataDir);
   // The live engine is never closed: the process "loses power" after the last mark, and its directory is not reused.
-  const { pg } = await EngineOpen.open({ kind: 'disk', dataDir }, { durable, hooks: [recorder.hook], settings: SETTINGS });
+  const { pg } = await EngineOpen.open({ kind: 'disk', dataDir }, { durable, platform, hooks: [recorder.hook], settings: SETTINGS });
   recorder.start(path.join(root, `${name}-base`));
   const ackedAt = await runWorkload(pg, recorder);
-  return { recorder, ackedAt };
+  return { recorder, ackedAt, platform };
 }
 
 function image(recording: Recording, label: MarkLabel, seed: number, name: string): { dir: string; acked: Acked; volatileOps: number } {
-  const { recorder, ackedAt } = recording;
+  const { recorder, ackedAt, platform } = recording;
   const mark = recorder.marks.find((m) => m.label === label);
   const acked = ackedAt.get(label);
   if (mark === undefined || acked === undefined || recorder.base === undefined) throw new Error('workload did not run');
   const dir = path.join(root, `img-${name}-${label}-${seed}`);
-  const stats = buildCrashImage(recorder.base, recorder.ops, mark.opIndex, seed, dir);
+  const stats = buildCrashImage(recorder.base, recorder.ops, mark.opIndex, seed, dir, platform);
   return { dir, acked, volatileOps: stats.volatileOps };
 }
 
-let fixed: Recording;
+const fixed = new Map<NodeJS.Platform, Recording>();
 let control: Recording;
 
 beforeAll(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'pgl-spike6-crash-'));
-  fixed = await record('fixed', true);
+  for (const platform of PLATFORMS) fixed.set(platform, await record(`fixed-${platform}`, true, platform));
   control = await record('control', false);
-}, 180_000);
+}, 300_000);
 
 afterAll(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-describe('lost unsynced writes, with storage rule 1', () => {
+function recording(platform: NodeJS.Platform): Recording {
+  const found = fixed.get(platform);
+  if (found === undefined) throw new Error(`no recording for ${platform}`);
+  return found;
+}
+
+describe.each(PLATFORMS)('lost unsynced writes, with storage rule 1 (%s rules)', (platform) => {
   it('records every file the engine touched, and real fsyncs', () => {
-    expect(fixed.recorder.unknownNodes).toBe(0);
-    expect(fixed.recorder.ops.some((op) => op.kind === 'fsync')).toBe(true);
+    expect(recording(platform).recorder.unknownNodes).toBe(0);
+    expect(recording(platform).recorder.ops.some((op) => op.kind === 'fsync')).toBe(true);
   });
 
   for (const label of MARKS) {
     for (const seed of SEEDS) {
       it(`crash at ${label}, seed ${seed}: every acknowledged commit present and amcheck clean`, async () => {
-        const img = image(fixed, label, seed, 'fixed');
+        const img = image(recording(platform), label, seed, `fixed-${platform}`);
         expect(img.volatileOps).toBeGreaterThan(0);
         const { pg } = await EngineOpen.open({ kind: 'disk', dataDir: img.dir }, { extensions: { amcheck } });
         try {
