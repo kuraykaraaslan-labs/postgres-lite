@@ -1,0 +1,45 @@
+{
+  "name": "@kuraykaraaslan/postgres-lite",
+  "version": "0.0.0",
+  "private": true,
+  "description": "PostgreSQL 18 server for Node.js dev and tests, on PGlite, with a TimescaleDB-compatible layer and durable on-disk storage. No Docker.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "postgres-lite": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "node dist/cli.js"
+  },
+  "keywords": [
+    "postgres",
+    "postgresql",
+    "timescaledb",
+    "pglite",
+    "in-memory",
+    "dev",
+    "test"
+  ],
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.16",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.1",
+    "typescript": "^7.0.2",
+    "vitest": "5.1.0"
+  }
+}

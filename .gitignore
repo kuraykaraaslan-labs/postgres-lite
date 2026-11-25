@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+*.tsbuildinfo
+
+# test and coverage output
+coverage/
+.vitest/
+.test-data/
+
+# reference TimescaleDB results recorded locally before they are committed as fixtures
+.oracle/
+
+# logs
+*.log
+npm-debug.log*
+
+# environment
+.env
+.env.*
+
+# editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
